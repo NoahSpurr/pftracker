@@ -21,6 +21,8 @@ typedef enum {
 
 typedef enum {
     PREPARE_SUCCESS,
+    PREPARE_NEGATIVE_ID,
+    PREPARE_STRING_TOO_LONG,
     PREPARE_SYNTAX_ERROR,
     PREPARE_UNRECOGNIZED_STATEMENT
 } PrepareResult;
@@ -38,8 +40,8 @@ typedef struct {
 
 typedef struct {
     uint32_t id;
-    char username[COLUMN_USERNAME_SIZE];
-    char email[COLUMN_EMAIL_SIZE];
+    char username[COLUMN_USERNAME_SIZE + 1];
+    char email[COLUMN_EMAIL_SIZE + 1];
 } Row;
 
 typedef struct {
@@ -70,7 +72,7 @@ void print_row(Row* row) {
 void serialize_row(Row* source, void* destination) {
     memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
     memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-    memcpy(destination + EMAIL_OFFSET, &(source->username), USERNAME_SIZE);
+    memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
 }
 
 void deserialize_row(void* source, Row* destination) {
@@ -119,6 +121,11 @@ InputBuffer* new_input_buffer() {
     return input_buffer;
 }
 
+void close_input_buffer(InputBuffer* input_buffer) {
+    free(input_buffer->buffer);
+    free(input_buffer);
+}
+
 void print_prompt() {
     /*
     prints a prompt to the user, which is done before reading each line of input
@@ -148,11 +155,6 @@ void read_input(InputBuffer* input_buffer) {
     input_buffer->buffer[bytes_read - 1] = 0;
 }
 
-void close_input_buffer(InputBuffer* input_buffer) {
-    free(input_buffer->buffer);
-    free(input_buffer);
-}
-
 MetaCommandResult do_meta_command(InputBuffer* input_buffer, Table* table) {
     if(strcmp(input_buffer->buffer, ".exit") == 0) {
         close_input_buffer(input_buffer);
@@ -163,15 +165,36 @@ MetaCommandResult do_meta_command(InputBuffer* input_buffer, Table* table) {
     }
 }
 
+PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
+    statement->type = STATEMENT_INSERT;
+
+    char* keyword = strtok(input_buffer->buffer, " ");
+    char* id_string = strtok(NULL, " ");
+    char* username = strtok(NULL, " ");
+    char* email = strtok(NULL, " ");
+
+    if(id_string == NULL || username == NULL || email == NULL) {
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    int id = atoi(id_string);
+    if(id < 0) {
+        return PREPARE_NEGATIVE_ID;
+    }
+    if(strlen(username) > COLUMN_USERNAME_SIZE) {
+        return PREPARE_STRING_TOO_LONG;
+    }
+
+    statement->row_to_insert.id = id;
+    strcpy(statement->row_to_insert.username, username);
+    strcpy(statement->row_to_insert.email, email);
+
+    return PREPARE_SUCCESS;
+}
+
 PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement) {
     if(strncmp(input_buffer->buffer, "insert", 6) == 0) {
-        statement->type = STATEMENT_INSERT;
-        int args_assigned = sscanf(input_buffer->buffer, "insert %d %s %s", &(statement->row_to_insert.id),
-            statement->row_to_insert.username, statement->row_to_insert.email);
-        if(args_assigned < 3) {
-            return PREPARE_SYNTAX_ERROR;
-        }
-        return PREPARE_SUCCESS;
+        return prepare_insert(input_buffer, statement);
     }
     if(strcmp(input_buffer->buffer, "select") == 0) {
         statement->type = STATEMENT_SELECT;
@@ -216,7 +239,7 @@ int main(int argc, char* argv[]) {
     /*
     REPL loop: read-execute-print loop that gets the commands from the command line
     */
-   Table* table = new_table();
+    Table* table = new_table();
     InputBuffer* input_buffer = new_input_buffer();
     while(true) {
         print_prompt();
@@ -236,6 +259,12 @@ int main(int argc, char* argv[]) {
         switch(prepare_statement(input_buffer, &statement)) {
             case(PREPARE_SUCCESS):
                 break;
+            case(PREPARE_NEGATIVE_ID):
+                printf("ID must be positive.\n");
+                continue;
+            case(PREPARE_STRING_TOO_LONG):
+                printf("String is too long.\n");
+                continue;
             case(PREPARE_SYNTAX_ERROR):
                 printf("Syntax error. Could not parse statement. \n");
                 continue;
@@ -244,7 +273,6 @@ int main(int argc, char* argv[]) {
                 continue;
         }
 
-        execute_statement(&statement, table);
         switch(execute_statement(&statement, table)) {
             case(EXECUTE_SUCCESS):
                 printf("Executed.\n");
